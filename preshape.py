@@ -3,11 +3,31 @@ import os
 import re
 import sys
 
+from typing import Tuple
+
 import h5py
+import progressbar
 
 
 DEFAULT_FROMDIR = './tmp'
 FILE_REGEX = re.compile(r'([^_]*)_eph_g2_p(\d+)\.h5')
+
+
+def make_pool_filename(prefix: str, pool: int) -> str:
+    '''
+    Generate a pool filename from a prefix and pool number.
+    '''
+    return f'{prefix}_eph_g2_p{pool}.h5'
+
+
+def kloc_index_to_pool_index(kloc, npools) -> Tuple[int, int]:
+    '''
+    Map a k-location index to a pool index and an index within the pool.  All
+    indexes are zero-based throughout this program, but the HDF5 files' names
+    and data key-names are all 1-based since they are used from Fortran.
+    '''
+    assert npools >= 1, f'Must have at least 1 pool; got {npools}'
+    return (kloc % npools, kloc // npools)
 
 
 class PoolFile:
@@ -27,8 +47,16 @@ class PoolFile:
     def __repr__(self):
         return self.filename
 
+    def open(self, mode):
+        assert self.hdf5 is None, f'HDF5 file {self.filename} is already open'
+        self.hdf5 = h5py.File(self.filename, mode)
+
+    def close(self):
+        self.hdf5.close()
+        self.hdf5 = None
+
     def scan_contents(self):
-        self.hdf5 = h5py.File(self.filename, 'r')
+        self.open('r')
         self.nk_loc = 0
         self.nkq = 0
         while True:
@@ -50,6 +78,21 @@ class PoolFile:
             # of entries
             self.nk_loc += 1
             self.nkq += len(self.hdf5[bnd_idx])
+
+    def get_eph_g2(self, index):
+        return self.hdf5[f'eph_g2_{index}']
+
+    def get_bands_index(self, index):
+        return self.hdf5[f'bands_index_{index}']
+
+    def make_new(self):
+        self.open('w')
+
+    def set_eph_g2(self, index, data):
+        return self.hdf5.create_dataset(f'eph_g2_{index}', data=data)
+
+    def set_bands_index(self, index, data):
+        return self.hdf5.create_dataset(f'bands_index_{index}', data=data)
 
 
 class PoolFileSet:
@@ -99,11 +142,27 @@ class PoolFileSet:
 
     def scan_files(self):
         self.nkpt = 0
-
         for pool in sorted(self.pool_files.keys()):
             f = self.pool_files[pool]
             f.scan_contents()
             self.nkpt += f.nk_loc
+
+    def make_new_pool_files(self, prefix, num_pools):
+        assert self.num_pools == 0
+        assert len(self.pool_files) == 0
+
+        self.prefix = prefix
+        self.num_pools = num_pools
+
+        for pool in range(1, self.num_pools + 1):
+            filename = make_pool_filename(self.prefix, pool)
+            f = PoolFile(os.path.join(self.path, filename), pool)
+            f.make_new()
+            self.pool_files[pool] = f
+
+    def close_all(self):
+        for f in self.pool_files.values():
+            f.close()
 
 
 def main():
@@ -140,7 +199,7 @@ def main():
         existing_files = os.listdir(args.todir)
         if len(existing_files) > 0:
             print(f'ERROR:  Existing files found in {args.todir}, aborting.')
-            sys.exist(1)
+            sys.exit(1)
 
     print(f'\nScanning source directory {args.fromdir}')
 
@@ -155,7 +214,30 @@ def main():
 
     print(f'Total k-grid points found:  {sfset.nkpt}')
 
+    print(f'\nWriting new set of pool files to directory {args.todir}')
 
+    tfset = PoolFileSet(args.todir)
+    tfset.make_new_pool_files(sfset.prefix, args.pools)
+
+    bar = progressbar.ProgressBar(max_value=sfset.nkpt)
+    bar.start()
+    for i_kloc in range(sfset.nkpt):
+        (src_pool, src_idx) = kloc_index_to_pool_index(i_kloc, sfset.num_pools)
+        (tgt_pool, tgt_idx) = kloc_index_to_pool_index(i_kloc, tfset.num_pools)
+
+        src_f = sfset.pool_files[src_pool + 1]
+        tgt_f = tfset.pool_files[tgt_pool + 1]
+
+        tgt_f.set_eph_g2(tgt_idx + 1, src_f.get_eph_g2(src_idx + 1))
+        tgt_f.set_bands_index(tgt_idx + 1, src_f.get_bands_index(src_idx + 1))
+
+        bar.update(i_kloc + 1)
+    bar.finish()
+
+    sfset.close_all()
+    tfset.close_all()
+
+    print('\nDone!')
     sys.exit(0)
 
 
