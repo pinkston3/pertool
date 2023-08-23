@@ -10,9 +10,9 @@ DEFAULT_FROMDIR = './tmp'
 FILE_REGEX = re.compile(r'([^_]*)_eph_g2_p(\d+)\.h5')
 
 
-class SourceFile:
+class PoolFile:
     '''
-    A single source HDF5 file in the source set of data files.
+    A single HDF5 file in the set of pool data files.
     '''
 
     def __init__(self, filename: str, pool: int):
@@ -52,24 +52,29 @@ class SourceFile:
             self.nkq += len(self.hdf5[bnd_idx])
 
 
-class SourceFileSet:
+class PoolFileSet:
+    '''
+    A collection of pool data files that drive a Perturbo simulation run.
+    '''
 
     def __init__(self, path):
+        self.path = path
         self.num_pools = 0
         self.pool_files = {}
         self.prefix = None
-
         self.nkpt = 0
 
-        self._find_source_files(path)
-
-
-    def _find_source_files(self, path):
+    def find_files(self):
+        '''
+        Scan the file-set's path for pool files.  This is used for the source
+        set of data files, but isn't used when generating a new set of data
+        files.
+        '''
         self.num_pools = 0
         self.pool_files = {}
         self.prefix = None
 
-        files = os.listdir(path)
+        files = os.listdir(self.path)
         for filename in files:
             match = FILE_REGEX.fullmatch(filename)
             if match:
@@ -86,7 +91,7 @@ class SourceFileSet:
                     raise ValueError(f'Pool {pool} appears in multiple filenames')
 
                 self.num_pools += 1
-                self.pool_files[pool] = SourceFile(os.path.join(path, filename), pool)
+                self.pool_files[pool] = PoolFile(os.path.join(self.path, filename), pool)
 
         for i in range(1, self.num_pools + 1):
             if i not in self.pool_files:
@@ -95,16 +100,10 @@ class SourceFileSet:
     def scan_files(self):
         self.nkpt = 0
 
-        print('Scanning source files:')
         for pool in sorted(self.pool_files.keys()):
             f = self.pool_files[pool]
             f.scan_contents()
-            print(f' * {f.filename}:\tnk_loc = {f.nk_loc}\tnkq = {f.nkq}')
-
             self.nkpt += f.nk_loc
-
-        print(f'Total k-grid points found:  {self.nkpt}')
-
 
 
 def main():
@@ -143,13 +142,19 @@ def main():
             print(f'ERROR:  Existing files found in {args.todir}, aborting.')
             sys.exist(1)
 
-    print(f'Scanning source directory {args.fromdir}')
-    sfset = SourceFileSet(args.fromdir)
+    print(f'\nScanning source directory {args.fromdir}')
+
+    sfset = PoolFileSet(args.fromdir)
+    sfset.find_files()
+    sfset.scan_files()
+
     print(f'Found {sfset.num_pools} files:')
     for pool in sorted(sfset.pool_files.keys()):
-        print(f' * {sfset.pool_files[pool]}')
+        f = sfset.pool_files[pool]
+        print(f' * {f.filename}:\tnk_loc = {f.nk_loc}\tnkq = {f.nkq}')
 
-    sfset.scan_files()
+    print(f'Total k-grid points found:  {sfset.nkpt}')
+
 
     sys.exit(0)
 
