@@ -271,6 +271,9 @@ def main():
     parser.add_argument('-p', '--pools', type=int, required=True,
         help='Number of pools to generate in the target directory.')
 
+    parser.add_argument('--mp', action='store_true',
+        help='Use multiprocessing to speed up reshape operations.')
+
     args = parser.parse_args(sys.argv[1:])
 
     # Check arguments
@@ -294,6 +297,9 @@ def main():
             print(f'ERROR:  Existing files found in {args.todir}, aborting.')
             sys.exit(1)
 
+    if args.mp:
+        print(f'\nUsing multiprocessing to speed up performance.')
+
     print(f'\nScanning source directory {args.fromdir}')
 
     sfset = PoolFileSet(args.fromdir)
@@ -303,9 +309,11 @@ def main():
         sys.exit(1)
 
     print(f'Found {sfset.num_pools} files:')
-    sfset.scan_files_mp(
-        progress=lambda pool, f : print(f' * {f.filename}:\tnk_loc = {f.nk_loc}\tnkq = {f.nkq}')
-    )
+    scan_fn = sfset.scan_files
+    if args.mp:
+        scan_fn = sfset.scan_files_mp
+
+    scan_fn(progress=lambda pool, f : print(f' * {f.filename}:\tnk_loc = {f.nk_loc}\tnkq = {f.nkq}'))
 
     print(f'Total k-grid points found:  {sfset.nkpt}')
 
