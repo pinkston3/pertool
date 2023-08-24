@@ -10,7 +10,7 @@ import progressbar
 
 
 DEFAULT_FROMDIR = './tmp'
-FILE_REGEX = re.compile(r'([^_]*)_eph_g2_p(\d+)\.h5')
+FILE_REGEX = re.compile(r'([^_]+)_eph_g2_p(\d+)\.h5')
 
 
 def make_pool_filename(prefix: str, pool: int) -> str:
@@ -48,10 +48,20 @@ class PoolFile:
         return self.filename
 
     def open(self, mode):
+        '''
+        Open the pool's HDF5 file with the specified mode, e.g. 'r' or 'w'.
+        This operation is called by other methods on the class.
+
+        An assertion will fail if the file is opened more than once, without
+        closing it in between.
+        '''
         assert self.hdf5 is None, f'HDF5 file {self.filename} is already open'
         self.hdf5 = h5py.File(self.filename, mode)
 
     def close(self):
+        '''
+        Close the pool's HDF5 file.
+        '''
         self.hdf5.close()
         self.hdf5 = None
 
@@ -140,14 +150,38 @@ class PoolFileSet:
             if i not in self.pool_files:
                 raise ValueError(f'Can\'t find file for pool {i} ,in {self.num_pools} pools')
 
-    def scan_files(self):
+    def scan_files(self, progress=None):
+        '''
+        Open each HDF5 pool data file found by the ``find_files`` method,
+        and scan its contents to see if they make sense, and to see how many
+        k-grid locations are in each file.
+
+        Since this is a slow operation, callers can optionally provide a
+        ``progress(pool: int, f: PoolFile)`` callback function; this function
+        is called after the file ``f`` has been scanned by the operation.
+        '''
         self.nkpt = 0
         for pool in sorted(self.pool_files.keys()):
             f = self.pool_files[pool]
             f.scan_contents()
             self.nkpt += f.nk_loc
 
+            if progress:
+                progress(pool, f)
+
     def make_new_pool_files(self, prefix, num_pools):
+        '''
+        Generate a set of new pool data files with the specified file-prefix.
+        An HDF5 file is generated in the target directory for each pool, so
+        that they can begin being populated by the reshaping process.
+
+        This object must not already have a set of pool files, or an error
+        will be reported.
+
+        The number of pools specified must be at least 1.
+        '''
+        assert len(prefix) > 0, 'Must specify a file-name prefix'
+        assert num_pools > 0, f'Must specify at least 1 pool; got {num_pools}'
         assert self.num_pools == 0
         assert len(self.pool_files) == 0
 
@@ -205,12 +239,14 @@ def main():
 
     sfset = PoolFileSet(args.fromdir)
     sfset.find_files()
-    sfset.scan_files()
+    if sfset.num_pools == 0:
+        print('ERROR:  Found no pool data files in source directory, aborting.')
+        sys.exit(1)
 
     print(f'Found {sfset.num_pools} files:')
-    for pool in sorted(sfset.pool_files.keys()):
-        f = sfset.pool_files[pool]
-        print(f' * {f.filename}:\tnk_loc = {f.nk_loc}\tnkq = {f.nkq}')
+    sfset.scan_files(
+        progress=lambda pool, f : print(f' * {f.filename}:\tnk_loc = {f.nk_loc}\tnkq = {f.nkq}')
+    )
 
     print(f'Total k-grid points found:  {sfset.nkpt}')
 
