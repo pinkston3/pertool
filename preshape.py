@@ -1,4 +1,5 @@
 import argparse
+import multiprocessing
 import os
 import re
 import sys
@@ -105,6 +106,18 @@ class PoolFile:
         return self.hdf5.create_dataset(f'bands_index_{index}', data=data)
 
 
+# Define the function that runs in the subprocess
+def mp_scan_perturbo_hdf5_file(filename, pool, conn):
+    try:
+        f = PoolFile(filename, pool)
+        f.scan_contents()
+        conn.send( (f.nk_loc, f.nkq) )
+    except BaseException as err:
+        conn.send(err)
+
+    conn.close()
+
+
 class PoolFileSet:
     '''
     A collection of pool data files that drive a Perturbo simulation run.
@@ -168,6 +181,52 @@ class PoolFileSet:
 
             if progress:
                 progress(pool, f)
+
+
+    def scan_files_mp(self, progress=None):
+        '''
+        Open each HDF5 pool data file found by the ``find_files`` method,
+        and scan its contents to see if they make sense, and to see how many
+        k-grid locations are in each file.
+
+        Since this is a slow operation, callers can optionally provide a
+        ``progress(pool: int, f: PoolFile)`` callback function; this function
+        is called after the file ``f`` has been scanned by the operation.
+        '''
+
+        self.nkpt = 0
+
+        # Spin up a subprocess for each input file to scan.  This way we can
+        # scan them concurrently.
+        subprocesses = []
+        for pool in sorted(self.pool_files.keys()):
+            f = self.pool_files[pool]
+
+            (parent_conn, child_conn) = multiprocessing.Pipe()
+            proc = multiprocessing.Process(target=mp_scan_perturbo_hdf5_file,
+                args=(f.filename, pool, child_conn))
+            proc.start()
+            subprocesses.append((f, proc, parent_conn))
+
+        for (f, proc, parent_conn) in subprocesses:
+            pool = f.pool
+            value = parent_conn.recv()
+            proc.join()
+            if isinstance(value, BaseException):
+                raise value
+
+            # Seems like things worked - unpack the result
+            (nk_loc, nkq) = value
+            f.nk_loc = nk_loc
+            f.nkq = nkq
+            self.nkpt += nk_loc
+
+            # Also need to open the file; this process hasn't opened it yet
+            f.open('r')
+
+            if progress:
+                progress(pool, f)
+
 
     def make_new_pool_files(self, prefix, num_pools):
         '''
@@ -244,7 +303,7 @@ def main():
         sys.exit(1)
 
     print(f'Found {sfset.num_pools} files:')
-    sfset.scan_files(
+    sfset.scan_files_mp(
         progress=lambda pool, f : print(f' * {f.filename}:\tnk_loc = {f.nk_loc}\tnkq = {f.nkq}')
     )
 
