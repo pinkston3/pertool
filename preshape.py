@@ -312,6 +312,14 @@ def check_args(args):
     if args.mp:
         print(f'\nUsing multiprocessing to speed up performance.')
 
+def file_scan_progress(pool, f, max_filename_len):
+    # This is grungy because we want to add extra string padding after the
+    # ':' character, not before it.
+    out_filename = f.filename + ':  '
+    if len(out_filename) < max_filename_len + 3:
+        out_filename = out_filename + ' ' * (max_filename_len + 3 - len(out_filename))
+
+    print(f' * {out_filename}nk_loc = {f.nk_loc}\tnkq = {f.nkq}')
 
 def scan_source_directory(args):
     print(f'\nScanning source directory {args.fromdir}')
@@ -322,12 +330,14 @@ def scan_source_directory(args):
         print('ERROR:  Found no pool data files in source directory, aborting.')
         sys.exit(1)
 
+    max_filename_len = max([len(f.filename) for f in sfset.pool_files.values()])
+
     print(f'Found {sfset.num_pools} files:')
     scan_fn = sfset.scan_files
     if args.mp:
         scan_fn = sfset.scan_files_mp
 
-    scan_fn(progress=lambda pool, f : print(f' * {f.filename}:\tnk_loc = {f.nk_loc}\tnkq = {f.nkq}'))
+    scan_fn(progress=lambda pool, f : file_scan_progress(pool, f, max_filename_len))
 
     print(f'Total k-grid points found:  {sfset.nkpt}')
 
@@ -366,6 +376,7 @@ def mp_generate_perturbo_hdf5_file(filename, pool, num_pools, sfset, conn):
         tgt_f.open('w')
         tgt_f.nk_loc = 0
 
+        count = 0
         for i_kloc in range(pool, sfset.nkpt, num_pools):
             (src_pool, src_idx) = kloc_index_to_pool_index(i_kloc, sfset.num_pools)
             (tgt_pool, tgt_idx) = kloc_index_to_pool_index(i_kloc, num_pools)
@@ -381,7 +392,13 @@ def mp_generate_perturbo_hdf5_file(filename, pool, num_pools, sfset, conn):
 
             tgt_f.nk_loc += 1
 
-        conn.send(tgt_f.nk_loc)
+            count += 1
+            if count >= 100:
+                conn.send(count)
+                count = 0
+
+        conn.send(count)
+        conn.send(None)
 
     except BaseException as err:
         conn.send(err)
@@ -409,11 +426,33 @@ def mp_write_new_target_files(args, sfset):
         proc.start()
 
     # Monitor the subprocesses for their completion.
+
+    bar = progressbar.ProgressBar(max_value=sfset.nkpt)
+    bar.start()
+
+    conns = [sp[2] for sp in subprocesses]
+    count = 0
+    finished = 0
+    while finished < args.pools:
+        active = multiprocessing.connection.wait(conns)
+        for conn in active:
+            try:
+                value = conn.recv()
+            except EOFError:
+                continue
+
+            if isinstance(value, int):
+                count += value
+                bar.update(count)
+            elif isinstance(value, BaseException):
+                raise RuntimeError('Subprocess error') from value
+            elif value is None:
+                finished += 1
+
+    bar.finish()
+
     for (pool, proc, parent_conn) in subprocesses:
-        value = parent_conn.recv()
         proc.join()
-        if isinstance(value, BaseException):
-            raise value
 
 
 def main():
