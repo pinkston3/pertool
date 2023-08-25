@@ -63,6 +63,9 @@ class PoolFile:
         '''
         Close the pool's HDF5 file.
         '''
+        if self.hdf5 is None:
+            return
+
         self.hdf5.close()
         self.hdf5 = None
 
@@ -107,6 +110,9 @@ class PoolFile:
 
 
 # Define the function that runs in the subprocess
+#
+# NOTE(donnie):  Seems like this needs to be a top-level function so it can
+#     be pickled and passed to the subprocess.
 def mp_scan_perturbo_hdf5_file(filename, pool, conn):
     try:
         f = PoolFile(filename, pool)
@@ -253,12 +259,16 @@ class PoolFileSet:
             f.make_new()
             self.pool_files[pool] = f
 
+    def open_all(self, mode):
+        for f in self.pool_files.values():
+            f.open(mode)
+
     def close_all(self):
         for f in self.pool_files.values():
             f.close()
 
 
-def main():
+def parse_args():
     parser = argparse.ArgumentParser(prog='preshape',
         description='Reshape Perturbo tmp/ files for a different number of pools')
 
@@ -275,7 +285,9 @@ def main():
         help='Use multiprocessing to speed up reshape operations.')
 
     args = parser.parse_args(sys.argv[1:])
+    return args
 
+def check_args(args):
     # Check arguments
 
     print(f'Reading pool files from {args.fromdir}')
@@ -300,6 +312,8 @@ def main():
     if args.mp:
         print(f'\nUsing multiprocessing to speed up performance.')
 
+
+def scan_source_directory(args):
     print(f'\nScanning source directory {args.fromdir}')
 
     sfset = PoolFileSet(args.fromdir)
@@ -317,6 +331,10 @@ def main():
 
     print(f'Total k-grid points found:  {sfset.nkpt}')
 
+    return sfset
+
+
+def write_new_target_files(args, sfset):
     print(f'\nWriting new set of pool files to directory {args.todir}')
 
     tfset = PoolFileSet(args.todir)
@@ -336,9 +354,80 @@ def main():
 
         bar.update(i_kloc + 1)
     bar.finish()
+    tfset.close_all()
+    return tfset
+
+
+def mp_generate_perturbo_hdf5_file(filename, pool, num_pools, sfset, conn):
+    try:
+        sfset.open_all('r')
+
+        tgt_f = PoolFile(filename, pool + 1)
+        tgt_f.open('w')
+        tgt_f.nk_loc = 0
+
+        for i_kloc in range(pool, sfset.nkpt, num_pools):
+            (src_pool, src_idx) = kloc_index_to_pool_index(i_kloc, sfset.num_pools)
+            (tgt_pool, tgt_idx) = kloc_index_to_pool_index(i_kloc, num_pools)
+
+            # All of the k-grid indexes we are traversing should map to this
+            # specific target file.
+            assert tgt_pool == pool, f'k-grid index {i_kloc} maps to {tgt_pool}, not expected pool {pool}'
+
+            src_f = sfset.pool_files[src_pool + 1]
+
+            tgt_f.set_eph_g2(tgt_idx + 1, src_f.get_eph_g2(src_idx + 1))
+            tgt_f.set_bands_index(tgt_idx + 1, src_f.get_bands_index(src_idx + 1))
+
+            tgt_f.nk_loc += 1
+
+        conn.send(tgt_f.nk_loc)
+
+    except BaseException as err:
+        conn.send(err)
+
+    conn.close()
+
+
+def mp_write_new_target_files(args, sfset):
+    print(f'\nWriting new set of pool files to directory {args.todir}')
+
+    # Since we pass the source fileset to the subprocesses, we need to close
+    # the HDF5 files since we can't pickle them.
+    sfset.close_all()
+
+    # Spin up a subprocess for each target file we are writing.
+    subprocesses = []
+    for pool in range(args.pools):
+        filename = make_pool_filename(sfset.prefix, pool + 1)
+        filename = os.path.join(args.todir, filename)
+        (parent_conn, child_conn) = multiprocessing.Pipe()
+
+        proc = multiprocessing.Process(target=mp_generate_perturbo_hdf5_file,
+            args=(filename, pool, args.pools, sfset, child_conn))
+        subprocesses.append((pool, proc, parent_conn))
+        proc.start()
+
+    # Monitor the subprocesses for their completion.
+    for (pool, proc, parent_conn) in subprocesses:
+        value = parent_conn.recv()
+        proc.join()
+        if isinstance(value, BaseException):
+            raise value
+
+
+def main():
+    args = parse_args()
+    check_args(args)
+
+    sfset = scan_source_directory(args)
+
+    if args.mp:
+        mp_write_new_target_files(args, sfset)
+    else:
+        write_new_target_files(args, sfset)
 
     sfset.close_all()
-    tfset.close_all()
 
     print('\nDone!')
     sys.exit(0)
