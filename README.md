@@ -52,8 +52,7 @@ yields a substantial performance improvement.
 
 ## Parallel Reshape Operations
 
-[The HDF5 library is not designed to be used in highly concurrent settings.]
-(https://portal.hdfgroup.org/display/knowledge/Questions+about+thread-safety+and+concurrent+access)
+[The HDF5 library is not designed to be used in highly concurrent settings.](https://portal.hdfgroup.org/display/knowledge/Questions+about+thread-safety+and+concurrent+access)
 However, a certain amount of performance improvement is possible through the
 use of multi-process programming and the `multiprocessing` Python standard
 library.  The `preshape` program supports using `multiprocessing` with the
