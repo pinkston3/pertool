@@ -27,6 +27,7 @@ def kloc_index_to_pool_index(kloc, npools) -> Tuple[int, int]:
     indexes are zero-based throughout this program, but the HDF5 files' names
     and data key-names are all 1-based since they are used from Fortran.
     '''
+    assert kloc >= 0, f'k-grid location must be nonnegative; got {kloc}'
     assert npools >= 1, f'Must have at least 1 pool; got {npools}'
     return (kloc % npools, kloc // npools)
 
