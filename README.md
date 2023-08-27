@@ -39,9 +39,38 @@ To run `preshape` to regenerate pool data files, run it like this:
 python preshape.py -f <path to source tmp directory> \
         -t <path to target tmp directory> \
         -p <number of pools to generate>
+        [--mp]
 ```
 
 The source `tmp` directory is scanned, and `preshape` will determine the
 number of pools in the source directory automatically.
 
 If the target `tmp` directory is not empty, the program will report an error.
+
+The `--mp` flag can be used to enable multi-process parallelism, which often
+yields a substantial performance improvement.
+
+## Parallel Reshape Operations
+
+[The HDF5 library is not designed to be used in highly concurrent settings.]
+(https://portal.hdfgroup.org/display/knowledge/Questions+about+thread-safety+and+concurrent+access)
+However, a certain amount of performance improvement is possible through the
+use of multi-process programming and the `multiprocessing` Python standard
+library.  The `preshape` program supports using `multiprocessing` with the
+`--mp` flag, which parallelizes the reshape operation in these ways:
+
+*   The source HDF5 files are scanned in parallel, with one subprocess being
+    started for each source file.  This should yield significant performance
+    improvement in the typical case, as the source files are completely
+    independent.  Since the scan operation will typically be IO-bound, having
+    multiple concurrent scans will be a big win.
+
+*   The target HDF5 files are generated in parallel, with one subprocess
+    generating each target file.  This step is also likely to yield
+    significant performance improvement, but each subprocess must access all
+    source HDF5 files, and the HDF5 library may use file locking to ensure
+    exclusive access, even in read-only cases.  (See above link for details.)
+
+Testing is necessary to see if the multi-process code will be faster than
+serial code, but in the limited tests done on NERSC Perlmutter, an order of
+magnitude performance improvement is typical.
