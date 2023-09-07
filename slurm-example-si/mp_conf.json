@@ -1,0 +1,58 @@
+{
+  "variables":{
+    "job_name":"perturbo-150",
+    "gridsize":"150",
+    "nodes":"16",
+    "mpi_tasks":"64"
+  },
+  "steps":[
+    {
+      "variables":{
+        "pert_in":"pert-setup.in",
+        "pert_out":"pert_output_setup.yml",
+
+        "calc_mode":"setup",
+        "cdyn_impl":"std",
+        "boltz_nstep":"1",
+        "load_scatter_eph":".false."
+      },
+      "files":[
+        {"input":"pert.in.tmpl", "output":"pert-setup.in"},
+        {"input":"slurm.sh.tmpl", "output":"slurm-setup.sh"}
+      ],
+      "runcmd":"sbatch --dependency=singleton --job-name={job_name} slurm-setup.sh"
+    },
+    {
+      "variables":{
+        "pert_in":"pert-generate.in",
+        "pert_out":"pert_output_generate.yml",
+
+        "calc_mode":"dynamics-run",
+        "cdyn_impl":"std",
+        "boltz_nstep":"1",
+        "load_scatter_eph":".false."
+      },
+      "files":[
+        {"input":"pert.in.tmpl", "output":"pert-generate.in"},
+        {"input":"slurm.sh.tmpl", "output":"slurm-generate.sh"}
+      ],
+      "runcmd":"sbatch --dependency=singleton --job-name={job_name} slurm-generate.sh"
+    },
+    {
+      "variables":{
+        "pert_in":"pert-run.in",
+        "pert_out":"pert_output_run.yml",
+
+        "calc_mode":"dynamics-run",
+        "cdyn_impl":"tgt",
+        "boltz_nstep":"50",
+        "load_scatter_eph":".true."
+      },
+      "files":[
+        {"input":"pert.in.tmpl", "output":"pert-run.in"},
+        {"input":"slurm.sh.tmpl", "output":"slurm-run.sh"}
+      ],
+      "runcmd":"sbatch --dependency=singleton --job-name={job_name} slurm-run.sh"
+    }
+  ]
+}
