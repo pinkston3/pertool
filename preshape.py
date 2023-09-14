@@ -3,6 +3,7 @@ import multiprocessing
 import os
 import re
 import sys
+import time
 
 from typing import Tuple
 
@@ -12,6 +13,9 @@ import progressbar
 
 DEFAULT_FROMDIR = './tmp'
 FILE_REGEX = re.compile(r'([^_]+)_eph_g2_p(\d+)\.h5')
+
+DEFAULT_MAX_PROCESSES = 50
+SUBPROCESS_REPORT_INTERVAL = 3.0 # in seconds
 
 
 def make_pool_filename(prefix: str, pool: int) -> str:
@@ -113,15 +117,10 @@ class PoolFile:
 #
 # NOTE(donnie):  Seems like this needs to be a top-level function so it can
 #     be pickled and passed to the subprocess.
-def mp_scan_perturbo_hdf5_file(filename, pool, conn):
-    try:
-        f = PoolFile(filename, pool)
-        f.scan_contents()
-        conn.send( (f.nk_loc, f.nkq) )
-    except BaseException as err:
-        conn.send(err)
-
-    conn.close()
+def mp_scan_perturbo_hdf5_file(filename, pool):
+    f = PoolFile(filename, pool)
+    f.scan_contents()
+    return (f.nk_loc, f.nkq)
 
 
 class PoolFileSet:
@@ -135,6 +134,7 @@ class PoolFileSet:
         self.pool_files = {}
         self.prefix = None
         self.nkpt = 0
+        self.nkq = 0
 
     def find_files(self):
         '''
@@ -180,16 +180,17 @@ class PoolFileSet:
         is called after the file ``f`` has been scanned by the operation.
         '''
         self.nkpt = 0
+        self.nkq = 0
         for pool in sorted(self.pool_files.keys()):
             f = self.pool_files[pool]
             f.scan_contents()
             self.nkpt += f.nk_loc
+            self.nkq += f.nkq
 
             if progress:
                 progress(pool, f)
 
-
-    def scan_files_mp(self, progress=None):
+    def scan_files_mp(self, progress=None, **kwargs):
         '''
         Open each HDF5 pool data file found by the ``find_files`` method,
         and scan its contents to see if they make sense, and to see how many
@@ -200,38 +201,55 @@ class PoolFileSet:
         is called after the file ``f`` has been scanned by the operation.
         '''
 
+        max_processes = kwargs.get('max_processes', DEFAULT_MAX_PROCESSES)
+
         self.nkpt = 0
+        self.nkq = 0
 
         # Spin up a subprocess for each input file to scan.  This way we can
         # scan them concurrently.
-        subprocesses = []
+
+        # Unfortunately we have "multiprocessing.Pool" and also the
+        # Perturbo pool files...
+        exec_pool = multiprocessing.Pool(max_processes)
+        results: list[tuple[PoolFile, multiprocessing.pool.AsyncResult]] = []
+
+        # Queue up the scans of all the pool files for execution.
         for pool in sorted(self.pool_files.keys()):
             f = self.pool_files[pool]
+            r = exec_pool.apply_async(mp_scan_perturbo_hdf5_file, (f.filename, pool) )
+            results.append( (f, r) )
 
-            (parent_conn, child_conn) = multiprocessing.Pipe()
-            proc = multiprocessing.Process(target=mp_scan_perturbo_hdf5_file,
-                args=(f.filename, pool, child_conn))
-            proc.start()
-            subprocesses.append((f, proc, parent_conn))
+        exec_pool.close()
 
-        for (f, proc, parent_conn) in subprocesses:
-            pool = f.pool
-            value = parent_conn.recv()
-            proc.join()
-            if isinstance(value, BaseException):
-                raise value
+        # Wait for results to come back in order so our output looks nice.
 
-            # Seems like things worked - unpack the result
-            (nk_loc, nkq) = value
-            f.nk_loc = nk_loc
-            f.nkq = nkq
-            self.nkpt += nk_loc
+        errors = 0
+        for (f, r) in results:
+            try:
+                value = r.get()
 
-            # Also need to open the file; this process hasn't opened it yet
-            f.open('r')
+                # Seems like things worked - unpack the result
+                (nk_loc, nkq) = value
+                f.nk_loc = nk_loc
+                f.nkq = nkq
+                self.nkpt += nk_loc
+                self.nkq += nkq
 
-            if progress:
-                progress(pool, f)
+                if progress:
+                    progress(pool, f)
+
+            except BaseException as err:
+                print(f'ERROR:  exception while scanning pool-file {f.pool}:')
+                traceback.print_exception(err)
+                errors += 1
+
+        exec_pool.join()
+
+        if not errors:
+            self.open_all('r')
+        else:
+            raise RuntimeError(f'{errors} error(s) detected during pool-file scans')
 
 
     def make_new_pool_files(self, prefix, num_pools):
@@ -281,11 +299,20 @@ def parse_args():
     parser.add_argument('-p', '--pools', type=int, required=True,
         help='Number of pools to generate in the target directory.')
 
+    parser.add_argument('-n', '--dryrun', action='store_true',
+        help='Perform a dry-run; don\'t write any target files out.')
+
+    parser.add_argument('-q', '--quiet', action='store_true',
+        help='Run in "quiet mode," with a minimum of output.')
+
     parser.add_argument('--mp', action='store_true',
         help='Use multiprocessing to speed up reshape operations.')
 
-    args = parser.parse_args(sys.argv[1:])
-    return args
+    parser.add_argument('-M', '--max-processes', type=int, default=DEFAULT_MAX_PROCESSES,
+        help=f'Specify maximum number of subprocesses to use.  Default is {DEFAULT_MAX_PROCESSES}.')
+
+    return parser.parse_args()
+
 
 def check_args(args):
     # Check arguments
@@ -300,17 +327,14 @@ def check_args(args):
         sys.exit(1)
 
     print(f'Writing {args.pools} pool files to {args.todir}')
-    if not os.path.exists(args.todir):
-        print(f'NOTE:  {args.todir} doesn\'t exist; creating')
-        os.makedirs(args.todir)
-    else:
+    if os.path.exists(args.todir):
         existing_files = os.listdir(args.todir)
         if len(existing_files) > 0:
             print(f'ERROR:  Existing files found in {args.todir}, aborting.')
             sys.exit(1)
 
     if args.mp:
-        print(f'\nUsing multiprocessing to speed up performance.')
+        print(f'\nUsing multiprocessing to speed up performance.  Max processes = {args.max_processes}.')
 
 def file_scan_progress(pool, f, max_filename_len):
     # This is grungy because we want to add extra string padding after the
@@ -332,20 +356,30 @@ def scan_source_directory(args):
 
     max_filename_len = max([len(f.filename) for f in sfset.pool_files.values()])
 
-    print(f'Found {sfset.num_pools} files:')
-    scan_fn = sfset.scan_files
+    if not args.quiet:
+        print(f'Found {sfset.num_pools} files:')
+
+    progress = None
+    if not args.quiet:
+        progress=lambda pool, f : file_scan_progress(pool, f, max_filename_len)
+
     if args.mp:
-        scan_fn = sfset.scan_files_mp
+        sfset.scan_files_mp(progress=progress, max_processes=args.max_processes)
+    else:
+        sfset.scan_files(progress=progress)
 
-    scan_fn(progress=lambda pool, f : file_scan_progress(pool, f, max_filename_len))
-
-    print(f'Total k-grid points found:  {sfset.nkpt}')
+    if not args.quiet:
+        print(f'Total k-grid points:  {sfset.nkpt}\tTotal k-q pairs:  {sfset.nkq}')
 
     return sfset
 
 
 def write_new_target_files(args, sfset):
     print(f'\nWriting new set of pool files to directory {args.todir}')
+
+    if not os.path.exists(args.todir):
+        print(f'NOTE:  {args.todir} doesn\'t exist; creating')
+        os.makedirs(args.todir)
 
     tfset = PoolFileSet(args.todir)
     tfset.make_new_pool_files(sfset.prefix, args.pools)
@@ -368,91 +402,93 @@ def write_new_target_files(args, sfset):
     return tfset
 
 
-def mp_generate_perturbo_hdf5_file(filename, pool, num_pools, sfset, conn):
-    try:
-        sfset.open_all('r')
+def mp_generate_perturbo_hdf5_file(filename, pool, num_pools, sfset, queue):
+    sfset.open_all('r')
 
-        tgt_f = PoolFile(filename, pool + 1)
-        tgt_f.open('w')
-        tgt_f.nk_loc = 0
+    tgt_f = PoolFile(filename, pool + 1)
+    tgt_f.open('w')
+    tgt_f.nk_loc = 0
 
-        count = 0
-        for i_kloc in range(pool, sfset.nkpt, num_pools):
-            (src_pool, src_idx) = kloc_index_to_pool_index(i_kloc, sfset.num_pools)
-            (tgt_pool, tgt_idx) = kloc_index_to_pool_index(i_kloc, num_pools)
+    count = 0
+    t = time.time()
+    for i_kloc in range(pool, sfset.nkpt, num_pools):
+        (src_pool, src_idx) = kloc_index_to_pool_index(i_kloc, sfset.num_pools)
+        (tgt_pool, tgt_idx) = kloc_index_to_pool_index(i_kloc, num_pools)
 
-            # All of the k-grid indexes we are traversing should map to this
-            # specific target file.
-            assert tgt_pool == pool, f'k-grid index {i_kloc} maps to {tgt_pool}, not expected pool {pool}'
+        # All of the k-grid indexes we are traversing should map to this
+        # specific target file.
+        assert tgt_pool == pool, f'k-grid index {i_kloc} maps to {tgt_pool}, not expected pool {pool}'
 
-            src_f = sfset.pool_files[src_pool + 1]
+        src_f = sfset.pool_files[src_pool + 1]
 
-            tgt_f.set_eph_g2(tgt_idx + 1, src_f.get_eph_g2(src_idx + 1))
-            tgt_f.set_bands_index(tgt_idx + 1, src_f.get_bands_index(src_idx + 1))
+        tgt_f.set_eph_g2(tgt_idx + 1, src_f.get_eph_g2(src_idx + 1))
+        tgt_f.set_bands_index(tgt_idx + 1, src_f.get_bands_index(src_idx + 1))
 
-            tgt_f.nk_loc += 1
+        tgt_f.nk_loc += 1
 
-            count += 1
-            if count >= 100:
-                conn.send(count)
-                count = 0
+        count += 1
+        t2 = time.time()
+        if (t2 - t) >= SUBPROCESS_REPORT_INTERVAL:
+            queue.put( (pool, count) )
+            count = 0
+            t = t2
 
-        conn.send(count)
-        conn.send(None)
-
-    except BaseException as err:
-        conn.send(err)
-
-    conn.close()
+    queue.put( (pool, count) )
+    queue.put( (pool, None) )
+    queue.close()
 
 
-def mp_write_new_target_files(args, sfset):
+def mp_write_new_target_files(args, sfset, **kwargs):
     print(f'\nWriting new set of pool files to directory {args.todir}')
+
+    max_processes = kwargs.get('max_processes', DEFAULT_MAX_PROCESSES)
 
     # Since we pass the source fileset to the subprocesses, we need to close
     # the HDF5 files since we can't pickle them.
     sfset.close_all()
 
-    # Spin up a subprocess for each target file we are writing.
-    subprocesses = []
-    for pool in range(args.pools):
-        filename = make_pool_filename(sfset.prefix, pool + 1)
-        filename = os.path.join(args.todir, filename)
-        (parent_conn, child_conn) = multiprocessing.Pipe()
+    exec_pool = multiprocessing.Pool(max_processes)
+    tasks = {}
+    manager = multiprocessing.Manager()
+    queue = manager.Queue()
 
-        proc = multiprocessing.Process(target=mp_generate_perturbo_hdf5_file,
-            args=(filename, pool, args.pools, sfset, child_conn))
-        subprocesses.append((pool, proc, parent_conn))
-        proc.start()
+    # Queue up a task for each target file we are writing.
+    for tgt_pool in range(args.pools):
+        tgt_filename = make_pool_filename(sfset.prefix, tgt_pool + 1)
+        tgt_filename = os.path.join(args.todir, tgt_filename)
+
+        r = exec_pool.apply_async(mp_generate_perturbo_hdf5_file,
+            (tgt_filename, tgt_pool, args.pools, sfset, queue))
+
+        tasks[tgt_pool] = r
+
+    exec_pool.close()
 
     # Monitor the subprocesses for their completion.
 
-    bar = progressbar.ProgressBar(max_value=sfset.nkpt)
-    bar.start()
+    if not args.quiet:
+        bar = progressbar.ProgressBar(max_value=sfset.nkpt)
+        bar.start()
 
-    conns = [sp[2] for sp in subprocesses]
     count = 0
-    finished = 0
-    while finished < args.pools:
-        active = multiprocessing.connection.wait(conns)
-        for conn in active:
-            try:
-                value = conn.recv()
-            except EOFError:
-                continue
+    while len(tasks) > 0:
+        (tgt_pool, value) = queue.get()
 
-            if isinstance(value, int):
-                count += value
+        if value is None:
+            # Finished processing specified pool.
+            # TODO:  Not sure if this is necessary.  tasks[tgt_pool].get()
+            del tasks[tgt_pool]
+        else:
+            count += value
+
+            if not args.quiet:
                 bar.update(count)
-            elif isinstance(value, BaseException):
-                raise RuntimeError('Subprocess error') from value
-            elif value is None:
-                finished += 1
 
-    bar.finish()
+    if not args.quiet:
+        bar.finish()
 
-    for (pool, proc, parent_conn) in subprocesses:
-        proc.join()
+    # Clean up the executor pool.
+    exec_pool.join()
 
 
 def main():
@@ -461,10 +497,13 @@ def main():
 
     sfset = scan_source_directory(args)
 
-    if args.mp:
-        mp_write_new_target_files(args, sfset)
+    if not args.dryrun:
+        if args.mp:
+            mp_write_new_target_files(args, sfset, max_processes=args.max_processes)
+        else:
+            write_new_target_files(args, sfset)
     else:
-        write_new_target_files(args, sfset)
+        print('\nDry-run requested, not writing output files.')
 
     sfset.close_all()
 
