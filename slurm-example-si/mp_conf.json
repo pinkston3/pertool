@@ -16,7 +16,7 @@
         "boltz_nstep":"1",
         "load_scatter_eph":".false."
       },
-      "files":[
+      "templates":[
         {"input":"pert.in.tmpl", "output":"pert-setup.in"},
         {"input":"slurm.sh.tmpl", "output":"slurm-setup.sh"}
       ],
@@ -32,7 +32,7 @@
         "boltz_nstep":"1",
         "load_scatter_eph":".false."
       },
-      "files":[
+      "templates":[
         {"input":"pert.in.tmpl", "output":"pert-generate.in"},
         {"input":"slurm.sh.tmpl", "output":"slurm-generate.sh"}
       ],
@@ -48,7 +48,7 @@
         "boltz_nstep":"50",
         "load_scatter_eph":".true."
       },
-      "files":[
+      "templates":[
         {"input":"pert.in.tmpl", "output":"pert-run.in"},
         {"input":"slurm.sh.tmpl", "output":"slurm-run.sh"}
       ],
