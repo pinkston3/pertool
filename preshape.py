@@ -22,6 +22,8 @@ def make_pool_filename(prefix: str, pool: int) -> str:
     '''
     Generate a pool filename from a prefix and pool number.
     '''
+    assert len(prefix) > 0, 'prefix must be specified'
+    assert pool > 0, f'pool must be positive; got {pool}'
     return f'{prefix}_eph_g2_p{pool}.h5'
 
 
@@ -31,6 +33,7 @@ def kloc_index_to_pool_index(kloc, npools) -> Tuple[int, int]:
     indexes are zero-based throughout this program, but the HDF5 files' names
     and data key-names are all 1-based since they are used from Fortran.
     '''
+    assert kloc >= 0, f'k-grid location must be nonnegative; got {kloc}'
     assert npools >= 1, f'Must have at least 1 pool; got {npools}'
     return (kloc % npools, kloc // npools)
 
@@ -98,26 +101,52 @@ class PoolFile:
             self.nkq += len(self.hdf5[bnd_idx])
 
     def get_eph_g2(self, index):
+        '''
+        Return the eph_g2 dataset for the specified index.  The dataset's
+        name will be "eph_g2_{index}" in the HDF5 file.
+        '''
         return self.hdf5[f'eph_g2_{index}']
 
     def get_bands_index(self, index):
+        '''
+        Return the bands_index dataset for the specified index.  The
+        dataset's name will be "bands_index_{index}" in the HDF5 file.
+        '''
         return self.hdf5[f'bands_index_{index}']
 
     def make_new(self):
         self.open('w')
 
     def set_eph_g2(self, index, data):
+        '''
+        Create an eph_g2 dataset for the specified index.  The dataset's
+        name will be "eph_g2_{index}" in the HDF5 file.
+        '''
         return self.hdf5.create_dataset(f'eph_g2_{index}', data=data)
 
     def set_bands_index(self, index, data):
+        '''
+        Create a bands_index dataset for the specified index.  The
+        dataset's name will be "bands_index_{index}" in the HDF5 file.
+        '''
         return self.hdf5.create_dataset(f'bands_index_{index}', data=data)
 
 
 # Define the function that runs in the subprocess
-#
-# NOTE(donnie):  Seems like this needs to be a top-level function so it can
-#     be pickled and passed to the subprocess.
 def mp_scan_perturbo_hdf5_file(filename, pool):
+    '''
+    This is the subprocess function that scans a Perturbo pool HDF5 file to
+    verify that everything looks correct, and to determine some essential
+    details of the pool file.
+
+    The process receives a pipe ``conn`` from the parent process, to which
+    it sends back the number of k-grid locations, and the number of k-q
+    pairs, in the file.
+
+    NOTE:  It seems like this needs to be a top-level function so it can
+           be pickled and passed to the subprocess.  There may be a better
+           way to do this in the long run, but this'll do for now.
+    '''
     f = PoolFile(filename, pool)
     f.scan_contents()
     return (f.nk_loc, f.nkq)
@@ -178,6 +207,8 @@ class PoolFileSet:
         Since this is a slow operation, callers can optionally provide a
         ``progress(pool: int, f: PoolFile)`` callback function; this function
         is called after the file ``f`` has been scanned by the operation.
+        Files are scanned, and will be reported to the progress function, in
+        order of increasing pool-number.
         '''
         self.nkpt = 0
         self.nkq = 0
@@ -196,9 +227,18 @@ class PoolFileSet:
         and scan its contents to see if they make sense, and to see how many
         k-grid locations are in each file.
 
+        This version differs from ``scan_files()`` in that it uses the Python
+        ``multiprocessing`` library to scan all files concurrently, using one
+        subprocess per file to scan.  Since scanning the source files is an
+        IO-intensive operation, parallelizing it will almost certainly result
+        in significant performance improvements.
+
         Since this is a slow operation, callers can optionally provide a
         ``progress(pool: int, f: PoolFile)`` callback function; this function
         is called after the file ``f`` has been scanned by the operation.
+        Because of the use of multiple process, files are scanned in no
+        specific order, but they are still reported to the progress function
+        in order of increasing pool-number.
         '''
 
         max_processes = kwargs.get('max_processes', DEFAULT_MAX_PROCESSES)
