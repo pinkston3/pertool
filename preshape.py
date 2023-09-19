@@ -481,6 +481,10 @@ def mp_generate_perturbo_hdf5_file(filename, pool, num_pools, sfset, queue):
 def mp_write_new_target_files(args, sfset, **kwargs):
     print(f'\nWriting new set of pool files to directory {args.todir}')
 
+    if not os.path.exists(args.todir):
+        print(f'NOTE:  {args.todir} doesn\'t exist; creating')
+        os.makedirs(args.todir)
+
     max_processes = kwargs.get('max_processes', DEFAULT_MAX_PROCESSES)
 
     # Since we pass the source fileset to the subprocesses, we need to close
