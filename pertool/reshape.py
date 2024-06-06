@@ -5,9 +5,6 @@ import re
 import sys
 import time
 
-from typing import Tuple
-
-import h5py
 import progressbar
 
 # Support for Perturbo eph_g2 pool files
