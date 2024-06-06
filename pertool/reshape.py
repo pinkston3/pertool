@@ -18,6 +18,32 @@ DEFAULT_MAX_PROCESSES = 50
 SUBPROCESS_REPORT_INTERVAL = 3.0 # in seconds
 
 
+def init_parser(subparsers):
+    parser = subparsers.add_parser('reshape',
+        help='Reshape Perturbo tmp/ files for a different number of pools.')
+
+    parser.add_argument('-f', '--fromdir', default=DEFAULT_FROMDIR,
+        help=f'Source directory to read eph_g2_p*.h5 files from.  Default is {DEFAULT_FROMDIR}.')
+
+    parser.add_argument('-t', '--todir', required=True,
+        help='Target directory to write reshaped eph_g2_p*.h5 files to.')
+
+    parser.add_argument('-p', '--pools', type=int, required=True,
+        help='Number of pools to generate in the target directory.')
+
+    parser.add_argument('-n', '--dryrun', action='store_true',
+        help='Perform a dry-run; don\'t write any target files out.')
+
+    parser.add_argument('-q', '--quiet', action='store_true',
+        help='Run in "quiet mode," with a minimum of output.')
+
+    parser.add_argument('--mp', action='store_true',
+        help='Use multiprocessing to speed up reshape operations.')
+
+    parser.add_argument('-M', '--max-processes', type=int, default=DEFAULT_MAX_PROCESSES,
+        help=f'Specify maximum number of subprocesses to use.  Default is {DEFAULT_MAX_PROCESSES}.')
+
+
 def make_pool_filename(prefix: str, pool: int) -> str:
     '''
     Generate a pool filename from a prefix and pool number.
@@ -326,34 +352,6 @@ class PoolFileSet:
             f.close()
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(prog='preshape',
-        description='Reshape Perturbo tmp/ files for a different number of pools')
-
-    parser.add_argument('-f', '--fromdir', default=DEFAULT_FROMDIR,
-        help=f'Source directory to read eph_g2_p*.h5 files from.  Default is {DEFAULT_FROMDIR}.')
-
-    parser.add_argument('-t', '--todir', required=True,
-        help='Target directory to write reshaped eph_g2_p*.h5 files to.')
-
-    parser.add_argument('-p', '--pools', type=int, required=True,
-        help='Number of pools to generate in the target directory.')
-
-    parser.add_argument('-n', '--dryrun', action='store_true',
-        help='Perform a dry-run; don\'t write any target files out.')
-
-    parser.add_argument('-q', '--quiet', action='store_true',
-        help='Run in "quiet mode," with a minimum of output.')
-
-    parser.add_argument('--mp', action='store_true',
-        help='Use multiprocessing to speed up reshape operations.')
-
-    parser.add_argument('-M', '--max-processes', type=int, default=DEFAULT_MAX_PROCESSES,
-        help=f'Specify maximum number of subprocesses to use.  Default is {DEFAULT_MAX_PROCESSES}.')
-
-    return parser.parse_args()
-
-
 def check_args(args):
     # Check arguments
 
@@ -535,8 +533,7 @@ def mp_write_new_target_files(args, sfset, **kwargs):
     exec_pool.join()
 
 
-def main():
-    args = parse_args()
+def main(args):
     check_args(args)
 
     sfset = scan_source_directory(args)
