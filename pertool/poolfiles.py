@@ -11,7 +11,7 @@ import h5py
 DEFAULT_FROMDIR = './tmp'
 FILE_REGEX = re.compile(r'([^_]+)_eph_g2_p(\d+)\.h5')
 
-DEFAULT_MAX_PROCESSES = 50
+DEFAULT_MAX_PROCESSES = 20
 SUBPROCESS_REPORT_INTERVAL = 3.0 # in seconds
 
 

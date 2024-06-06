@@ -11,13 +11,6 @@ import progressbar
 from .poolfiles import *
 
 
-DEFAULT_FROMDIR = './tmp'
-FILE_REGEX = re.compile(r'([^_]+)_eph_g2_p(\d+)\.h5')
-
-DEFAULT_MAX_PROCESSES = 50
-SUBPROCESS_REPORT_INTERVAL = 3.0 # in seconds
-
-
 def init_parser(subparsers):
     parser = subparsers.add_parser('reshape',
         help='Reshape Perturbo tmp/ files for a different number of pools.')
