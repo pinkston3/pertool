@@ -7,6 +7,7 @@
   },
   "steps":[
     {
+      "name":"setup",
       "variables":{
         "pert_in":"pert-setup.in",
         "pert_out":"pert_output_setup.yml",
@@ -23,6 +24,7 @@
       "runcmd":"sbatch --dependency=singleton --job-name={job_name} slurm-setup.sh"
     },
     {
+      "name":"generate",
       "variables":{
         "pert_in":"pert-generate.in",
         "pert_out":"pert_output_generate.yml",
@@ -39,6 +41,7 @@
       "runcmd":"sbatch --dependency=singleton --job-name={job_name} slurm-generate.sh"
     },
     {
+      "name":"run",
       "variables":{
         "pert_in":"pert-run.in",
         "pert_out":"pert_output_run.yml",
