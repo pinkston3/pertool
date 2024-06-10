@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import shutil
 import sys
 
 from typing import Any, Optional
@@ -65,14 +66,6 @@ def init_parser(subparsers) -> None:
 
 """
 
-def copy_file_to_dir(source_file, target_dir, symlink_large_files=False):
-    target_file = os.path.join(target_dir, source_file)
-
-    filesize = os.path.getsize(source_file)
-    if symlink_large_files and filesize >= LARGE_FILE_THRESHOLD:
-        os.symlink(source_file, target_file)
-    else:
-        shutil.copyfile(source_file, target_file)
 
 
 def generate_target_dir(template_dir, target_dirname_template, template_context,
@@ -128,13 +121,22 @@ def foreach_generate_target_dir_contents(foreach_vars, args, config, input_vars=
 
 
 def generate_target_dir_contents(args, config, input_vars=None):
+    # Set up the variables for this target directory
+
     if input_vars is None:
         input_vars = {}
 
     global_vars = dict(input_vars)
     global_vars.update(config.get('variables', {}))
 
+    # Make the target directory to generate stuff into
+
     todir = make_target_dir(args, global_vars)
+
+    # Go through all specified generation steps, generating output files
+    # for all specified template files.
+
+    template_files = set()
 
     steps = config.get('steps', [])
     if not steps:
@@ -168,12 +170,25 @@ def generate_target_dir_contents(args, config, input_vars=None):
         else:
             for tmpl in templates:
                 input_template = tmpl['input']
+                template_files.add(input_template)
 
                 output_file = make_template_filename(tmpl['output'], vars)
                 output_path = os.path.join(todir, output_file)
 
                 print(f'Processing template "{input_template}" into "{output_path}"')
                 generate_template_to_file(jinja_env, input_template, vars, output_path)
+
+    # Finally, copy over all other non-template files from the source
+    # directory into the target directory.
+
+    source_files = os.listdir(args.fromdir)
+    for filename in source_files:
+        # TODO:  Would be good to exclude config file as well
+        if filename in template_files:
+            continue
+
+        copy_file_to_dir(os.path.join(args.fromdir, filename), todir)
+
 
 def make_target_dir(args, vars):
     todir = make_template_filename(args.todir, vars)
@@ -210,6 +225,18 @@ def generate_template_to_file(jinja_env, source_file, variables, output_path):
         f.write(output_text)
 
 
+def copy_file_to_dir(source_filepath, target_dir, symlink_large_files=False):
+    target_file = os.path.join(target_dir, os.path.basename(source_filepath))
+
+    filesize = os.path.getsize(source_filepath)
+    if symlink_large_files and filesize >= LARGE_FILE_THRESHOLD:
+        print(f'Sym-linking large file "{source_filepath}" into output directory "{target_dir}"')
+        os.symlink(source_filepath, target_file)
+    else:
+        print(f'Copying "{source_filepath}" into output directory "{target_dir}"')
+        shutil.copyfile(source_filepath, target_file)
+
+
 def parse_arg_setvar(s: str) -> tuple[str, str]:
     '''
     Parse a --set NAME=VALUE argument into a (name,value) tuple.
@@ -242,8 +269,9 @@ def parse_arg_foreach(s: str) -> tuple[str, list]:
     # Remove the leading and trailing "[]"" characters, then split on ","
     values = values[1:-1].split(',')
 
-    # Trim whitespace off every value in the list
+    # Trim whitespace off every value in the list, and discard empty values
     values = [v.strip() for v in values]
+    values = [v for v in values if len(v) > 0]
 
     if len(values) == 0:
         raise RuntimeError(f'Bad --foreach argument "{s}":  no values found in list')
