@@ -14,7 +14,7 @@ import yaml
 DEFAULT_CONFIGFILE_JSON = 'mp_conf.json'
 DEFAULT_CONFIGFILE_YAML = 'mp_conf.yml'
 
-LARGE_FILE_THRESHOLD = 1_000_000_000
+LARGE_FILE_THRESHOLD = 500_000_000
 
 
 def init_parser(subparsers) -> None:
@@ -65,9 +65,6 @@ def init_parser(subparsers) -> None:
              'using this feature.')
 
 """
-
-
-
 def generate_target_dir(template_dir, target_dirname_template, template_context,
         symlink_large_files=False) -> str:
     '''
@@ -176,7 +173,7 @@ def generate_target_dir_contents(args, config, input_vars=None):
                 output_path = os.path.join(todir, output_file)
 
                 print(f'Processing template "{input_template}" into "{output_path}"')
-                generate_template_to_file(jinja_env, input_template, vars, output_path)
+                generate_template_to_file(args, jinja_env, input_template, vars, output_path)
 
     # Finally, copy over all other non-template files from the source
     # directory into the target directory.
@@ -192,7 +189,7 @@ def generate_target_dir_contents(args, config, input_vars=None):
 
 def make_target_dir(args, vars):
     todir = make_template_filename(args.todir, vars)
-    print(f'Writing generated results to output directory "{todir}"')
+    print(f'\n{"=" * 40}\nGenerating target directory:  {todir}')
 
     if not os.path.exists(todir):
         print(f'NOTE:  "{todir}" doesn\'t exist; creating')
@@ -217,24 +214,37 @@ def make_template_filename(template_str: str, variables: dict) -> str:
     return result
 
 
-def generate_template_to_file(jinja_env, source_file, variables, output_path):
+def generate_template_to_file(args, jinja_env, source_file, variables, output_path):
     template = jinja_env.get_template(source_file)
     output_text = template.render(**variables)
 
+    # Generate the file
     with open(output_path, 'w') as f:
         f.write(output_text)
 
+    # Copy file permissions from the template to the new file
+    shutil.copystat(os.path.join(args.fromdir, source_file), output_path)
 
-def copy_file_to_dir(source_filepath, target_dir, symlink_large_files=False):
+
+def copy_file_to_dir(source_filepath, target_dir, symlink_large_files=True):
     target_file = os.path.join(target_dir, os.path.basename(source_filepath))
 
     filesize = os.path.getsize(source_filepath)
     if symlink_large_files and filesize >= LARGE_FILE_THRESHOLD:
         print(f'Sym-linking large file "{source_filepath}" into output directory "{target_dir}"')
-        os.symlink(source_filepath, target_file)
+        rel_source_path = os.path.relpath(source_filepath, start=target_dir)
+        os.symlink(rel_source_path, target_file)
     else:
-        print(f'Copying "{source_filepath}" into output directory "{target_dir}"')
-        shutil.copyfile(source_filepath, target_file)
+        if os.path.isdir(source_filepath):
+            # TODO:  Figure out when to copy and when to symlink
+            # shutil.copytree(source_filepath, target_file)
+
+            print(f'Sym-linking directory "{source_filepath}" into output directory "{target_dir}"')
+            rel_source_path = os.path.relpath(source_filepath, start=target_dir)
+            os.symlink(rel_source_path, target_file)
+        else:
+            print(f'Copying file "{source_filepath}" into output directory "{target_dir}"')
+            shutil.copy(source_filepath, target_file)
 
 
 def parse_arg_setvar(s: str) -> tuple[str, str]:
