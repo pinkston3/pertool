@@ -358,7 +358,6 @@ def main(args: Optional[argparse.Namespace]=None) -> None:
         init_parser(parser)
         args = parser.parse_args()
 
-    print(args)
     check_args(args)
 
     # Load the config file that says what to do.
