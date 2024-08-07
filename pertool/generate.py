@@ -386,6 +386,6 @@ def main(args: Optional[argparse.Namespace]=None) -> None:
         all_vars.add(name)
         foreach_vars.append(name_lst)
 
-    foreach_generate_target_dir_contents(foreach_vars, args, config)
+    foreach_generate_target_dir_contents(foreach_vars, args, config, input_vars=cmdline_vars)
 
     print('\nDone!')
